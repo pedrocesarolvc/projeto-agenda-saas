@@ -1,0 +1,14 @@
+# Stack definida na Etapa 1, secao 1.5: a mesma dos outros dois
+# projetos do portfolio, sem tecnologia nova por tecnologia nova.
+
+fastapi            # framework da API (app/main.py)
+uvicorn[standard]  # servidor ASGI que sobe o FastAPI
+sqlmodel           # ORM (SQLAlchemy + Pydantic) usado em modelos/ e database.py
+psycopg2-binary    # driver de conexao com o Postgres
+pydantic-settings  # apoio a config.py (leitura de variavel de ambiente)
+pytest             # suite de testes, incluindo o teste dos dois tenants (Etapa 2, secao 2.9)
+
+# Entram quando a etapa correspondente for escrita e implementada:
+# alembic          -> migrations do banco (aparece com a Etapa 4, modelagem)
+# python-jose      -> geracao/validacao de JWT (Etapa 3, autenticacao)
+# passlib[bcrypt]  -> hash de senha (Etapa 3, autenticacao)
