@@ -1,26 +1,26 @@
 """
-Pacote "modelos": as entidades do dominio (Etapa 1, secao 1.6).
+Pacote "modelos": as cinco entidades do dominio (Etapa 4, secao 4.2).
 
-tenant.py e usuario.py ja existem, no tamanho minimo que a Etapa 3
-(autenticacao) exige para login e tenancy funcionarem de verdade.
-cliente, servico e agendamento ainda faltam — o desenho relacional
-completo, com todas as colunas e relacionamentos, e assunto da
-Etapa 4 (Modelagem), ainda pendente de documentacao.
+    tenant 1:N usuario, cliente, servico, agendamento
+    agendamento N:1 cliente, N:1 servico  (secao 4.3)
 
-O que ja se sabe, da Etapa 2 (secao 2.8), e a regra que vale para
-cada entidade daqui:
+Import de todas as classes aqui, num lugar so, e o que garante que o
+registro de mapeamento do SQLModel/SQLAlchemy resolve as referencias
+em string (ex.: Relationship(back_populates="clientes")) usadas nos
+arquivos individuais — cada modulo importa so o que precisa
+diretamente (evitando import circular) e conta com este __init__
+carregar o resto antes de qualquer query rodar.
+
+A regra que decide quem carrega tenant_id, da Etapa 2 (secao 2.8):
 "esse dado pertence a um negocio especifico ou ao sistema inteiro?"
-Pertence a um negocio (usuario, cliente, servico, agendamento) -> tem
-coluna tenant_id. E do sistema (o proprio cadastro de tenants,
-configuracao global) -> nao tem — e e exatamente por isso que Tenant,
-sozinho, nao carrega tenant_id.
-
-Quando a Etapa 4 for escrita, tenant.py e usuario.py crescem (mais
-colunas, relacionamentos) e cliente/servico/agendamento nascem —
-nenhum dos dois e recriado do zero.
+So Tenant fica de fora — ele e a raiz, nao pertence a um tenant, ele
+E o tenant.
 """
 
+from app.modelos.agendamento import Agendamento
+from app.modelos.cliente import Cliente
+from app.modelos.servico import Servico
 from app.modelos.tenant import Tenant
 from app.modelos.usuario import Papel, Usuario
 
-__all__ = ["Tenant", "Usuario", "Papel"]
+__all__ = ["Tenant", "Usuario", "Papel", "Cliente", "Servico", "Agendamento"]

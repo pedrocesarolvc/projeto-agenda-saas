@@ -1,19 +1,27 @@
 """
-Fixtures compartilhadas pelos testes da Etapa 3.
+Fixtures compartilhadas pelos testes das Etapas 3 e 4.
 
 Banco: SQLite em memoria, recriado a cada teste (StaticPool mantem a
 mesma conexao entre as chamadas dentro de um teste). Nao precisa de
-Postgres rodando so para validar login e permissao.
+Postgres rodando so para validar login, permissao e modelagem.
+
+SQLite nao aplica chave estrangeira por padrao -- precisa do PRAGMA
+abaixo ligado por conexao, senao o teste "FK barra id inexistente"
+(Etapa 4, secao 4.8) passaria por engano mesmo com a constraint
+ausente em tempo de execucao.
 """
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from app.auth.security import hash_senha
 from app.database import get_session
 from app.main import app
+from app.modelos.cliente import Cliente
+from app.modelos.servico import Servico
 from app.modelos.tenant import Tenant
 from app.modelos.usuario import Papel, Usuario
 
@@ -25,6 +33,11 @@ def session_fixture():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    @event.listens_for(engine, "connect")
+    def _ligar_fk(conexao_dbapi, _):
+        conexao_dbapi.execute("PRAGMA foreign_keys=ON")
+
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         yield session
@@ -67,3 +80,30 @@ def criar_usuario(
     session.commit()
     session.refresh(usuario)
     return usuario
+
+
+def criar_cliente(session: Session, tenant_id: int, nome: str = "Cliente de teste") -> Cliente:
+    cliente = Cliente(tenant_id=tenant_id, nome=nome)
+    session.add(cliente)
+    session.commit()
+    session.refresh(cliente)
+    return cliente
+
+
+def criar_servico(
+    session: Session,
+    tenant_id: int,
+    nome: str = "Corte",
+    duracao_minutos: int = 30,
+    preco: str = "50.00",
+) -> Servico:
+    servico = Servico(
+        tenant_id=tenant_id,
+        nome=nome,
+        duracao_minutos=duracao_minutos,
+        preco=preco,
+    )
+    session.add(servico)
+    session.commit()
+    session.refresh(servico)
+    return servico

@@ -1,11 +1,10 @@
 """
-Modelo mínimo de Usuario (Etapa 3 empresta o essencial da Etapa 4).
+Usuario — quem opera o sistema, não quem é atendido (Etapa 4, seção
+4.2: "o barbeiro é usuario; o freguês é cliente").
 
-Mesma lógica de tenant.py: o desenho relacional completo é Etapa 4,
-mas login (Etapa 3, seção 3.2-3.3) precisa de um usuário de verdade
-para conferir senha e descobrir tenant_id e papel. Estas são,
-literalmente, as três claims que vão para o JWT (seção 3.3) — nada
-aqui é coluna especulativa, é o mínimo que a etapa em mãos exige.
+Nasceu mínimo na Etapa 3 (login precisa de senha, tenant_id e papel —
+literalmente as três claims do JWT, seção 3.3). Ganha aqui o
+relacionamento de volta para Tenant (seção 4.3).
 
 email é único no sistema inteiro, não por tenant: no v1 uma pessoa
 pertence a um único negócio, então o e-mail já basta para o login
@@ -16,7 +15,9 @@ cadastro dele").
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
+
+from app.modelos.tenant import Tenant
 
 
 class Papel(str, Enum):
@@ -42,3 +43,5 @@ class Usuario(SQLModel, table=True):
     papel: Papel
 
     criado_em: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    tenant: Tenant = Relationship(back_populates="usuarios")

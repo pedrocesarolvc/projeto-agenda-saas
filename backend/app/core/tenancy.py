@@ -45,6 +45,25 @@ def get_tenant_id_atual(usuario: UsuarioAtual = Depends(get_usuario_atual)) -> i
     return usuario.tenant_id
 
 
+def pertence_ao_tenant(registro, tenant_id: int) -> bool:
+    """
+    Etapa 4, secao 4.5: a chave estrangeira garante que um
+    cliente_id/servico_id referenciado por um agendamento EXISTE, mas
+    nao que ele pertence ao mesmo tenant do agendamento. Sem essa
+    checagem extra, um agendamento do tenant A poderia apontar para
+    um cliente do tenant B — um vazamento de tenant escondido dentro
+    de uma referencia, o mesmo risco da Etapa 2 (secao 2.5) por outra
+    porta.
+
+    Uso pretendido (quando a camada de servico da Etapa 5 existir):
+    antes de gravar um agendamento, buscar o Cliente e o Servico
+    apontados e confirmar que os dois pertencem ao tenant do usuario
+    logado com esta funcao. 'registro' e qualquer objeto com o campo
+    tenant_id (Cliente, Servico, Agendamento, Usuario).
+    """
+    return registro is not None and registro.tenant_id == tenant_id
+
+
 def aplicar_filtro_tenant(query, modelo, tenant_id: str):
     """
     Funcao central que toda consulta de dado de negocio (clientes,

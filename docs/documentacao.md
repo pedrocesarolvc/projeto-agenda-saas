@@ -8,7 +8,7 @@
 | **1** | Visão, domínio e escopo | ✅ escrita |
 | **2** | Multi-tenancy — isolamento por tenant | ✅ escrita |
 | **3** | Autenticação e permissões — JWT por tenant e perfis | ✅ escrita |
-| 4 | Modelagem — o desenho relacional | ⬜ pendente |
+| **4** | Modelagem — o desenho relacional | ✅ escrita |
 | 5 | Regra de negócio — conflito de horário e status | ⬜ pendente |
 | 6 | CRUD de produção — paginação, filtro, busca, validação | ⬜ pendente |
 | 7 | Entrega — API, interface, testes e Docker | ⬜ pendente |
@@ -452,6 +452,136 @@ O penúltimo é o mais valioso: ele prova, em código, o princípio da seção 3
 
 ---
 
+# Etapa 4 — Modelagem
+
+## 4.1 O que esta etapa faz
+
+Desenhar as tabelas: quais entidades existem, o que cada uma guarda, e como elas se ligam.
+
+Terreno familiar — é modelagem relacional, que você já conhece. Por isso esta etapa é mais leve nas explicações e mais densa nas decisões. Duas coisas a carregam de peso, e são as que valem atenção: onde o `tenant_id` entra (consequência da Etapa 2) e o que a estrutura precisa oferecer para a regra de conflito da Etapa 5 funcionar. O resto é desenho.
+
+## 4.2 As cinco entidades
+
+O domínio de agendamento se resolve com cinco tabelas:
+
+| Entidade | O que representa | Tem `tenant_id`? |
+|---|---|---|
+| `tenant` | O negócio (a barbearia). A raiz do isolamento | Não — ela é o tenant |
+| `usuario` | Quem opera o sistema: dono ou atendente | Sim |
+| `cliente` | Quem recebe o serviço (o freguês da barbearia) | Sim |
+| `servico` | O que o negócio oferece: nome, duração, preço | Sim |
+| `agendamento` | Um horário marcado: liga cliente, serviço e tempo | Sim |
+
+A pergunta que decide o `tenant_id`, da Etapa 2: *"esse dado pertence a um negócio específico ou ao sistema inteiro?"*. A tabela `tenant` é a única que não pertence a um negócio — ela lista os negócios. Todas as outras pertencem a um, e carregam a coluna.
+
+Note a diferença entre `usuario` e `cliente`, que confunde no começo: o **usuário** opera o sistema (faz login, marca horários); o **cliente** é atendido (não tem login, é um registro na agenda). O barbeiro é usuário; o freguês é cliente. Dois conceitos, duas tabelas.
+
+## 4.3 Os relacionamentos
+
+```
+        tenant  (o negócio)
+          │
+          │ 1 : N          um negócio tem vários de cada
+    ┌─────┼─────────┬──────────────┐
+    ▼     ▼         ▼              ▼
+ usuario cliente  servico      agendamento
+                                 │  │  │
+              ┌──────────────────┘  │  └──────────────┐
+              ▼                     ▼                  ▼
+          cliente               servico            (tenant)
+       quem será atendido    o que será feito    dono da linha
+```
+
+Em palavras:
+
+- Um tenant tem muitos usuários, clientes, serviços e agendamentos. (1:N em tudo)
+- Um agendamento pertence a um cliente e a um serviço — é a tabela que amarra as pontas.
+- Todo agendamento, cliente, serviço e usuário aponta de volta para o seu tenant.
+
+O agendamento é a entidade central do domínio: é onde cliente, serviço e tempo se encontram, e é sobre ela que a regra de negócio da Etapa 5 vai operar.
+
+## 4.4 A tabela de agendamento, em detalhe
+
+Porque é a que a Etapa 5 vai usar, vale desenhá-la inteira:
+
+```sql
+CREATE TABLE agendamento (
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   BIGINT NOT NULL REFERENCES tenant(id),
+    cliente_id  BIGINT NOT NULL REFERENCES cliente(id),
+    servico_id  BIGINT NOT NULL REFERENCES servico(id),
+    inicio      TIMESTAMPTZ NOT NULL,
+    fim         TIMESTAMPTZ NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'marcado',
+    criado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+Três decisões embutidas aqui, cada uma com um porquê:
+
+**`inicio` e `fim`, não `inicio` + `duração`.** Guardar os dois extremos do intervalo torna a detecção de conflito (Etapa 5) uma comparação direta entre intervalos. Se guardasse só o início e a duração, toda checagem de sobreposição teria que recalcular o fim — trabalho repetido e fonte de erro. A duração vem do `servico`; o fim é calculado uma vez, na criação, e gravado.
+
+**`TIMESTAMPTZ`, não `TIMESTAMP`.** O TZ é fuso horário. Agendamento é sobre tempo, e tempo sem fuso é ambíguo — "14h" em qual referência? Guardar com fuso evita a classe inteira de bugs de horário que aparece quando o servidor está num fuso e o usuário em outro. Num projeto brasileiro isso pode parecer over-engineering, mas é o padrão correto e custa nada adotar desde o início.
+
+**`status` como texto com um default.** O ciclo de vida do agendamento (marcado → concluído, ou → cancelado) é a segunda regra da Etapa 5. A coluna nasce aqui; as transições válidas são lógica de negócio, não de banco.
+
+## 4.5 O tenant_id e a integridade
+
+Uma sutileza que separa modelagem ingênua de modelagem correta, e que conecta direto com a Etapa 2.
+
+Todo agendamento tem um `tenant_id`, um `cliente_id` e um `servico_id`. A pergunta que quase ninguém faz: o cliente e o serviço apontados são do **mesmo tenant** do agendamento?
+
+Nada no desenho básico impede um agendamento do tenant A apontar para um cliente do tenant B. As chaves estrangeiras garantem que o cliente *existe* — não que ele pertence ao tenant certo. Se a aplicação não cuidar disso, você teria um vazamento de tenant escondido dentro de uma referência, o mesmo risco da Etapa 2 por outra porta.
+
+A defesa, no v1: quando a aplicação cria um agendamento, ela valida — na camada de serviço — que `cliente_id` e `servico_id` pertencem ao `tenant_id` do usuário logado. É a mesma disciplina da Etapa 2 (o tenant vem do token, e tudo é conferido contra ele), agora aplicada às referências entre tabelas. Vale mencionar no README como cuidado consciente; é o tipo de detalhe que um avaliador atento procura.
+
+## 4.6 Índices que importam
+
+Modelar não é só criar tabelas — é prever como serão consultadas. Dois índices ganham destaque:
+
+**`tenant_id` em toda tabela do domínio.** Como toda query filtra por tenant (Etapa 2), a coluna `tenant_id` é a mais consultada do banco. Sem índice nela, cada consulta varre a tabela inteira. Um índice em `tenant_id` (muitas vezes composto, como `(tenant_id, inicio)` no agendamento) é o que mantém o sistema rápido conforme cresce.
+
+**`(tenant_id, inicio, fim)` no agendamento.** A busca de conflito da Etapa 5 pergunta "existe agendamento neste tenant que se sobreponha a este intervalo?". Um índice sobre tenant e tempo torna essa pergunta rápida. A modelagem, aqui, já está preparando o terreno da próxima etapa.
+
+Não é preciso encher o banco de índices no v1 — mas esses dois refletem os dois padrões de acesso que definem o sistema (filtrar por tenant, buscar por tempo), e mencioná-los mostra que você modela pensando em consulta, não só em armazenamento.
+
+## 4.7 SQLModel e as migrations
+
+Da estrutura da Etapa 1, esta etapa preenche `backend/app/modelos/`.
+
+**SQLModel** (ou SQLAlchemy) descreve essas tabelas como classes Python, e é a mesma escolha dos outros dois projetos — consistência de stack. Cada entidade vira uma classe; os relacionamentos viram referências entre elas.
+
+**Alembic** cuida das migrations — o versionamento do schema. Cada mudança na estrutura (uma coluna nova, uma tabela nova) vira um arquivo de migration versionado, que pode ser aplicado e revertido. Num projeto que evolui por etapas, isso importa: quando a Etapa 5 ou o roadmap pedirem uma coluna nova, a migration registra a mudança sem recriar o banco do zero. Mencionar migrations no README sinaliza que você pensa no ciclo de vida do schema, não só no seu estado atual.
+
+## 4.8 Como testar
+
+Modelagem se testa de forma mais indireta que as etapas anteriores — o que se verifica é que a estrutura sustenta as operações e a integridade:
+
+- Criar uma entidade de cada e recuperá-la devolve os mesmos dados
+- Um agendamento liga corretamente a seu cliente e serviço
+- A restrição de chave estrangeira barra um `cliente_id` inexistente
+- Um agendamento não aceita `cliente_id` de outro tenant (a validação da 4.5)
+- `inicio` e `fim` sobrevivem ao round-trip com o fuso correto (a decisão `TIMESTAMPTZ` da 4.4)
+- A migration aplica e reverte sem erro num banco limpo
+
+O quarto teste é o mais valioso — ele prova que a integridade entre tenants, o risco da seção 4.5, está fechada. É o parente, na camada de dados, do teste dos dois tenants da Etapa 2.
+
+## 4.9 Glossário desta etapa
+
+| Termo | O que é |
+|---|---|
+| **Entidade** | Uma "coisa" do domínio que vira uma tabela (tenant, cliente, agendamento...) |
+| **Relacionamento 1:N** | Um registro de um lado liga-se a vários do outro (um tenant, muitos clientes) |
+| **Chave estrangeira (FK)** | Coluna que referencia o id de outra tabela, garantindo que o alvo existe |
+| **TIMESTAMPTZ** | Timestamp com fuso horário. O tipo correto para tempo, evita ambiguidade |
+| **usuario vs. cliente** | Usuário opera o sistema (tem login); cliente é atendido (é um registro) |
+| **Integridade entre tenants** | Garantir que as referências de um agendamento pertencem ao mesmo tenant |
+| **SQLModel** | Biblioteca que descreve tabelas como classes Python |
+| **Migration** | Arquivo versionado que registra uma mudança de schema (via Alembic) |
+| **Índice composto** | Índice sobre mais de uma coluna (ex.: `tenant_id, inicio`), para consultas frequentes |
+
+---
+
 ## Próxima etapa
 
-**Etapa 4 — Modelagem:** o desenho relacional completo — tenant, usuário, cliente, serviço e agendamento — e como cada um se relaciona no PostgreSQL.
+**Etapa 5 — Regra de negócio:** o conflito de horário (a checagem de sobreposição que a modelagem já preparou com o índice composto) e a transição de status do agendamento.
