@@ -7,7 +7,7 @@
 |---|---|---|
 | **1** | Visão, domínio e escopo | ✅ escrita |
 | **2** | Multi-tenancy — isolamento por tenant | ✅ escrita |
-| 3 | Autenticação e permissões — JWT por tenant e perfis | ⬜ pendente |
+| **3** | Autenticação e permissões — JWT por tenant e perfis | ✅ escrita |
 | 4 | Modelagem — o desenho relacional | ⬜ pendente |
 | 5 | Regra de negócio — conflito de horário e status | ⬜ pendente |
 | 6 | CRUD de produção — paginação, filtro, busca, validação | ⬜ pendente |
@@ -301,6 +301,157 @@ Teste com **dois** tenants, sempre. Um teste com um tenant só é cego para exat
 
 ---
 
+# Etapa 3 — Autenticação e permissões
+
+## 3.1 O que esta etapa faz, e o que ela reaproveita
+
+Esta etapa responde três perguntas sobre cada requisição que chega:
+
+1. **Quem é você?** — autenticação (o login)
+2. **De qual negócio você é?** — o tenant, primeira camada da autorização
+3. **O que você pode fazer?** — o papel, segunda camada da autorização
+
+A pergunta 1 é território que você já domina: JWT, hash de senha, login. Esta etapa não vai reexplicar isso — vai tratá-lo como base pronta e construir por cima. O que é novo, e o que importa aqui, são as perguntas 2 e 3: como o tenant entra no token, e como o papel recorta o que cada usuário faz.
+
+A distinção que sustenta tudo, e que ficou firme na Etapa 1: autenticação é **quem você é**; autorização é **o que você pode**. São duas verificações separadas, nesta ordem — primeiro o sistema sabe quem você é, depois decide o que liberar.
+
+## 3.2 A autenticação, em uma seção (porque você já sabe)
+
+O fluxo padrão, só para fixar o contrato com o resto do projeto:
+
+- No cadastro, a senha é guardada como **hash** (bcrypt ou argon2), nunca em texto puro.
+- No login, o backend confere a senha contra o hash e, se bate, emite um **JWT**.
+- Cada requisição seguinte manda o token; o backend valida a assinatura e confia no conteúdo.
+
+Nada disso é específico deste projeto — é o mesmo login de qualquer aplicação. O que torna este login multi-tenant é **o que vai dentro do token**, e é aí que a etapa começa de verdade.
+
+## 3.3 O tenant mora no token
+
+Lembra do `:meu_tenant` que a Etapa 2 deixou pendente na seção 2.7 — a origem do valor que alimenta o filtro de isolamento? É aqui.
+
+Quando o usuário faz login, o backend sabe a qual tenant ele pertence (está gravado no cadastro dele). Esse `tenant_id` entra no JWT, junto da identidade:
+
+```
+JWT (payload)
+├── sub: id do usuário       ← quem é você
+├── tenant_id: id do negócio ← de qual negócio você é
+├── role: "dono"             ← seu papel (seção 3.5)
+└── exp: validade
+```
+
+A partir daí, toda requisição carrega, no token, o tenant do usuário. O backend extrai o `tenant_id` do token e o usa no filtro de toda query. O elo que faltava na Etapa 2 está fechado: o filtro `WHERE tenant_id = :meu_tenant` recebe seu valor daqui.
+
+## 3.4 O princípio que evita a falha mais comum de SaaS
+
+Este é o ponto mais importante da etapa, e é curto: **o tenant vem sempre do token, nunca do que o cliente envia.**
+
+Imagine que, em vez de tirar o tenant do token, o backend aceitasse o tenant que o frontend manda — na URL (`/agendamentos?tenant=5`) ou no corpo. Aí bastaria o usuário da Barbearia A trocar o número para `tenant=7` e ler os dados da Barbearia B. O isolamento inteiro da Etapa 2 cairia por uma linha de input.
+
+A regra é absoluta:
+
+> O cliente diz **quem** quer autenticar (login e senha). O servidor decide **qual tenant é esse** (a partir do cadastro, gravado no token). O cliente nunca escolhe seu próprio tenant.
+
+Todo dado que decide permissão — tenant e papel — vem do token, que o servidor assinou e o cliente não pode forjar. Nada que venha do corpo ou da URL da requisição pode influenciar isolamento ou permissão. Esse é o tipo de princípio que, dito numa entrevista, mostra que você entende segurança de aplicação, não só sintaxe.
+
+## 3.5 A segunda camada: papel (dono vs. atendente)
+
+O tenant recortou quais dados você alcança. O **papel** recorta o que você faz com eles. É a autorização de segundo nível, e ela opera *dentro* do tenant.
+
+Dois papéis no v1:
+
+| Ação | Dono | Atendente |
+|---|---|---|
+| Ver a agenda | ✅ | ✅ |
+| Marcar / remarcar / cancelar agendamento | ✅ | ✅ |
+| Cadastrar e editar clientes | ✅ | ✅ |
+| Criar / editar / remover serviços e preços | ✅ | ❌ |
+| Gerenciar usuários do negócio | ✅ | ❌ |
+| Ver relatórios do negócio | ✅ | ❌ |
+
+O atendente toca o dia a dia (agenda e clientes); o dono controla a configuração do negócio (serviços, preços, equipe). A linha divisória é "operar" versus "configurar".
+
+As duas camadas juntas, na ordem em que agem:
+
+```
+requisição chega
+      │
+      ▼
+1. autenticada?      → o token é válido?           (senão: 401)
+      │
+      ▼
+2. filtro de tenant  → só vê dados do próprio tenant (Etapa 2)
+      │
+      ▼
+3. papel permite?    → esse papel pode esta ação?   (senão: 403)
+      │
+      ▼
+   executa
+```
+
+Repare que o atendente da Barbearia A **não** é barrado de ver a agenda da B pelo passo 3 — ele é barrado no passo 2, porque aquele dado nem entra no universo dele. O papel só entra em cena depois que o tenant já filtrou. Primeiro o universo, depois o que se faz nele — exatamente a estrutura de duas camadas descrita na Etapa 1.
+
+## 3.6 401 e 403: não são a mesma recusa
+
+Uma distinção pequena que denota cuidado:
+
+- **401 (Unauthorized)** — "não sei quem você é". Token ausente, inválido ou expirado. Falha de **autenticação**.
+- **403 (Forbidden)** — "sei quem você é, mas você não pode isto". O atendente tentando criar um serviço. Falha de **autorização**.
+
+Trocar um pelo outro é erro comum e confunde quem consome a API. 401 diz "faça login"; 403 diz "login não adianta, você não tem permissão". A distinção espelha exatamente autenticação vs. autorização — o tema da etapa inteira, agora nos códigos de status.
+
+## 3.7 A permissão é decidida no servidor, sempre
+
+A decisão de arquitetura que a Etapa 1 antecipou (seção 1.5), agora no lugar certo.
+
+O frontend vai esconder o botão "criar serviço" do atendente — é boa experiência, ele não vê o que não pode usar. Mas esconder o botão **não é** a segurança. Um atendente que conheça a rota pode chamá-la direto, sem passar pela tela. Se o backend não verificar o papel, a chamada passa.
+
+Portanto:
+
+> Esconder no frontend é conveniência. Barrar no backend é segurança. As duas coexistem, mas só a segunda protege.
+
+Toda ação restrita é verificada no servidor, na entrada da rota, independentemente do que o frontend mostrou ou escondeu. O frontend nunca é a fronteira de segurança — ele é a camada de conforto sobre uma fronteira que mora no backend.
+
+## 3.8 Onde isso vive no código
+
+Da estrutura de pastas da Etapa 1, esta etapa preenche `backend/app/auth/`:
+
+- emissão e validação do JWT
+- extração de `sub`, `tenant_id` e `role` do token a cada requisição
+- uma dependência do FastAPI que entrega "o usuário atual" (com tenant e papel) para as rotas
+- uma verificação de papel reutilizável, para marcar rotas que exigem "dono"
+
+O ponto de design: o `tenant_id` extraído aqui é o mesmo que a `core/tenancy.py` (Etapa 2) injeta no filtro. Autenticação e isolamento se encontram neste valor — o token o fornece, a camada de tenancy o consome. Duas etapas, um dado, um fluxo.
+
+## 3.9 Como testar
+
+Autenticação e permissão são determinísticas — e, como no isolamento da Etapa 2, o teste que importa é o que tenta furar a regra:
+
+- Login com senha certa emite token; com senha errada, nega
+- Requisição sem token → 401
+- Requisição com token expirado ou adulterado → 401
+- Atendente tentando criar um serviço → 403
+- Dono criando um serviço → sucesso
+- O teste que junta as duas camadas: um usuário tentando passar um `tenant_id` no corpo ou na URL diferente do seu token → o valor do corpo é ignorado, o do token prevalece. Prova que o tenant não é forjável pelo cliente.
+- Dono da Barbearia A não consegue gerenciar usuários da B (as duas camadas agindo: tenant barra antes, papel barraria depois)
+
+O penúltimo é o mais valioso: ele prova, em código, o princípio da seção 3.4 — o tenant vem do token, não do cliente. É o teste que fecha o vazamento mais comum de sistema multi-tenant.
+
+## 3.10 Glossário desta etapa
+
+| Termo | O que é |
+|---|---|
+| **Autenticação** | Provar quem você é. Resulta no token |
+| **Autorização** | Decidir o que você pode. Tem duas camadas aqui: tenant e papel |
+| **Hash de senha** | A senha guardada de forma irreversível (bcrypt, argon2), nunca em texto puro |
+| **Claim** | Um campo dentro do JWT (`sub`, `tenant_id`, `role`, `exp`) |
+| **Papel / role** | O nível de permissão do usuário dentro do tenant — dono ou atendente |
+| **401 Unauthorized** | "Não sei quem você é" — falha de autenticação |
+| **403 Forbidden** | "Sei quem você é, mas não pode" — falha de autorização |
+| **Dependência (FastAPI)** | Função que o framework injeta na rota — aqui, "o usuário atual" com tenant e papel |
+| **Tenant a partir do token** | O princípio de que tenant e papel vêm do token assinado, nunca de input do cliente |
+
+---
+
 ## Próxima etapa
 
-**Etapa 3 — Autenticação e permissões:** o JWT que você já conhece, agora amarrado ao tenant, e a segunda camada da autorização — o papel (dono vs. atendente).
+**Etapa 4 — Modelagem:** o desenho relacional completo — tenant, usuário, cliente, serviço e agendamento — e como cada um se relaciona no PostgreSQL.

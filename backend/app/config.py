@@ -19,11 +19,13 @@ class Settings:
         "postgresql://postgres:postgres@localhost:5432/projeto_agenda",
     )
 
-    # Chave de assinatura do JWT. Fica aqui reservado porque a
-    # autenticacao (Etapa 3) ainda esta pendente de documentacao —
-    # quando ela for escrita, app/auth/ consome esta variavel para
-    # assinar e validar o token que carrega usuario + tenant_id.
-    secret_key: str = os.getenv("SECRET_KEY", "changeme-em-producao")
+    # Chave de assinatura do JWT (Etapa 3). app/auth/jwt.py assina e
+    # valida com ela o token que carrega usuario, tenant_id e papel —
+    # trocar por um valor forte e secreto em producao, nunca usar o
+    # default abaixo fora de desenvolvimento local.
+    secret_key: str = os.getenv(
+        "SECRET_KEY", "changeme-em-producao-use-uma-chave-longa-e-aleatoria"
+    )
 
 
 @lru_cache

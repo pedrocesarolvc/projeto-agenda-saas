@@ -16,38 +16,33 @@ A defesa (secao 2.6, Nivel 1) e centralizar: nenhuma rota fala com o
 banco direto, toda consulta passa por uma camada que recebe o tenant
 atual e injeta o filtro sozinha. E exatamente o papel deste modulo.
 
-POR QUE ESTA QUASE VAZIO AINDA
---------------------------------
-O filtro depende de saber "quem esta logado e de qual tenant" — e essa
-identidade vem do JWT (secao 2.7: "o tenant vem sempre do token, nunca
-do que o cliente manda no corpo ou na URL"). A extracao do token e
-assunto da Etapa 3 (autenticacao e permissoes), ainda pendente de
-documentacao. Por isso get_tenant_id_atual() abaixo e so o contrato —
-a implementacao real (decodificar o JWT, validar o usuario) entra
-quando a Etapa 3 for escrita.
-
-O motivo de este arquivo existir DESDE JA, mesmo incompleto, e o
-mesmo do rodape da documentacao: e mais facil construir centralizado
-desde a primeira query do que refatorar vinte queries soltas depois.
+O ELO COM A ETAPA 3
+--------------------
+Etapa 3, secao 3.8, e explicita sobre isso: "o tenant_id extraido
+[em app/auth/] e o mesmo que a core/tenancy.py (Etapa 2) injeta no
+filtro. Autenticacao e isolamento se encontram neste valor — o token
+o fornece, a camada de tenancy o consome. Duas etapas, um dado, um
+fluxo." get_tenant_id_atual() abaixo e exatamente esse encontro: so
+delega para get_usuario_atual (app/auth/dependencies.py) e devolve o
+tenant_id que ja veio decodificado do token — nunca lendo URL ou
+corpo da requisicao (secao 2.7 e secao 3.4).
 """
 
 from fastapi import Depends
 
+from app.auth.dependencies import UsuarioAtual, get_usuario_atual
 
-def get_tenant_id_atual() -> str:
-    """
-    Contrato da funcao que toda consulta ao banco vai depender para
-    saber "de qual tenant e essa requisicao".
 
-    Hoje e um placeholder. Quando a Etapa 3 (auth) estiver escrita,
-    o corpo desta funcao passa a extrair o tenant_id do JWT do usuario
-    autenticado — nunca de um parametro de URL ou de um campo do
-    corpo da requisicao (secao 2.7: o tenant nao e algo que o cliente
-    escolhe, e o servidor quem decide a partir de quem esta logado).
+def get_tenant_id_atual(usuario: UsuarioAtual = Depends(get_usuario_atual)) -> int:
     """
-    raise NotImplementedError(
-        "Depende da Etapa 3 (autenticacao): extrair tenant_id do JWT."
-    )
+    A funcao que toda consulta ao banco depende para saber "de qual
+    tenant e essa requisicao". O valor vem do token do usuario
+    autenticado (claim tenant_id, secao 3.3) — nunca de um parametro
+    de URL ou de um campo do corpo da requisicao (secao 2.7: o tenant
+    nao e algo que o cliente escolhe, e o servidor quem decide a
+    partir de quem esta logado).
+    """
+    return usuario.tenant_id
 
 
 def aplicar_filtro_tenant(query, modelo, tenant_id: str):

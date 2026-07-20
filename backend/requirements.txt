@@ -7,8 +7,9 @@ sqlmodel           # ORM (SQLAlchemy + Pydantic) usado em modelos/ e database.py
 psycopg2-binary    # driver de conexao com o Postgres
 pydantic-settings  # apoio a config.py (leitura de variavel de ambiente)
 pytest             # suite de testes, incluindo o teste dos dois tenants (Etapa 2, secao 2.9)
+httpx              # TestClient do FastAPI depende dele (usado nos testes)
+pyjwt              # emissao/validacao do JWT (Etapa 3, app/auth/jwt.py)
+bcrypt             # hash de senha (Etapa 3, app/auth/security.py)
 
-# Entram quando a etapa correspondente for escrita e implementada:
-# alembic          -> migrations do banco (aparece com a Etapa 4, modelagem)
-# python-jose      -> geracao/validacao de JWT (Etapa 3, autenticacao)
-# passlib[bcrypt]  -> hash de senha (Etapa 3, autenticacao)
+# Entra quando a Etapa 4 (modelagem) for escrita:
+# alembic          -> migrations do banco
