@@ -17,10 +17,18 @@ So Tenant fica de fora — ele e a raiz, nao pertence a um tenant, ele
 E o tenant.
 """
 
-from app.modelos.agendamento import Agendamento
+from app.modelos.agendamento import Agendamento, StatusAgendamento
 from app.modelos.cliente import Cliente
 from app.modelos.servico import Servico
 from app.modelos.tenant import Tenant
 from app.modelos.usuario import Papel, Usuario
 
-__all__ = ["Tenant", "Usuario", "Papel", "Cliente", "Servico", "Agendamento"]
+__all__ = [
+    "Tenant",
+    "Usuario",
+    "Papel",
+    "Cliente",
+    "Servico",
+    "Agendamento",
+    "StatusAgendamento",
+]

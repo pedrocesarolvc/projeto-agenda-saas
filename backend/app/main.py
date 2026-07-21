@@ -3,13 +3,13 @@ Ponto de entrada da API (Etapa 1, secao 1.6).
 
 Responsabilidade unica deste arquivo: subir a instancia do FastAPI e
 registrar os routers (os arquivos de app/rotas/) conforme eles vao
-existindo. auth.py e o primeiro (Etapa 3); os demais chegam com as
-etapas de modelagem e regra de negocio.
+existindo. auth.py e o primeiro (Etapa 3); agendamentos.py chega com
+a Etapa 5.
 """
 
 from fastapi import FastAPI
 
-from app.rotas import auth
+from app.rotas import agendamentos, auth
 
 app = FastAPI(
     title="Projeto Agenda - SaaS de Agendamento Multi-tenant",
@@ -17,6 +17,7 @@ app = FastAPI(
 )
 
 app.include_router(auth.router)
+app.include_router(agendamentos.router)
 
 
 @app.get("/health")
@@ -30,7 +31,7 @@ def health_check() -> dict:
 
 
 # Proximos routers entram aqui conforme forem escritos, por exemplo:
-# from app.rotas import tenants, clientes, agendamentos
+# from app.rotas import tenants, clientes, servicos
 # app.include_router(tenants.router)
 # app.include_router(clientes.router)
-# app.include_router(agendamentos.router)
+# app.include_router(servicos.router)

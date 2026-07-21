@@ -102,6 +102,13 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_usuarios_tenant_id'), table_name='usuarios')
     op.drop_index(op.f('ix_usuarios_email'), table_name='usuarios')
     op.drop_table('usuarios')
+    # sa.Enum('DONO', 'ATENDENTE', name='papel') vira um TYPE nativo
+    # no Postgres (nao existe em SQLite, por isso este bug so aparece
+    # testando contra Postgres de verdade -- Etapa 5). Derrubar a
+    # tabela usuarios NAO derruba o type; sem esta linha, um segundo
+    # upgrade apos este downgrade falha com "type papel already
+    # exists".
+    sa.Enum(name='papel').drop(op.get_bind(), checkfirst=True)
     op.drop_index(op.f('ix_servicos_tenant_id'), table_name='servicos')
     op.drop_table('servicos')
     op.drop_index(op.f('ix_clientes_tenant_id'), table_name='clientes')

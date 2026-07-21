@@ -28,6 +28,7 @@ tenant que se sobreponha a este intervalo?" (Etapa 5) é sobre
 """
 
 from datetime import datetime, timezone
+from enum import Enum
 
 from sqlalchemy import Column, DateTime, Index
 from sqlmodel import Field, Relationship, SQLModel
@@ -35,6 +36,21 @@ from sqlmodel import Field, Relationship, SQLModel
 from app.modelos.cliente import Cliente
 from app.modelos.servico import Servico
 from app.modelos.tenant import Tenant
+
+
+class StatusAgendamento(str, Enum):
+    """
+    O vocabulario dos tres estados da secao 5.7. Deliberadamente NAO
+    e o tipo da coluna `status` no banco -- ela continua sendo texto
+    puro (Etapa 4, seção 4.4: "as transições válidas não são impostas
+    aqui" no banco). Isto so existe para a camada de servico (Etapa 5)
+    ter valores nomeados em vez de strings soltas espalhadas pelo
+    codigo.
+    """
+
+    MARCADO = "marcado"
+    CONCLUIDO = "concluido"
+    CANCELADO = "cancelado"
 
 
 class Agendamento(SQLModel, table=True):
@@ -55,7 +71,7 @@ class Agendamento(SQLModel, table=True):
 
     inicio: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     fim: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    status: str = Field(default="marcado")
+    status: str = Field(default=StatusAgendamento.MARCADO.value)
 
     criado_em: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

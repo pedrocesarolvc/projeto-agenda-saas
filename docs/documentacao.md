@@ -9,7 +9,7 @@
 | **2** | Multi-tenancy — isolamento por tenant | ✅ escrita |
 | **3** | Autenticação e permissões — JWT por tenant e perfis | ✅ escrita |
 | **4** | Modelagem — o desenho relacional | ✅ escrita |
-| 5 | Regra de negócio — conflito de horário e status | ⬜ pendente |
+| **5** | Regra de negócio — conflito de horário e status | ✅ escrita |
 | 6 | CRUD de produção — paginação, filtro, busca, validação | ⬜ pendente |
 | 7 | Entrega — API, interface, testes e Docker | ⬜ pendente |
 
@@ -582,6 +582,182 @@ O quarto teste é o mais valioso — ele prova que a integridade entre tenants, 
 
 ---
 
+# Etapa 5 — Regra de negócio
+
+## 5.1 A única lógica de domínio de verdade
+
+Até aqui o projeto montou infraestrutura: isolamento, login, tabelas. Nada disso é sobre agendamento — é o alicerce que qualquer SaaS precisa. Esta etapa é a primeira que trata do que o sistema *é*: agendar.
+
+E "agendar" carrega uma regra que não existe em nenhuma tecnologia, em nenhum banco, em nenhuma linguagem — existe no domínio: dois clientes não podem ocupar o mesmo horário com o mesmo profissional. Essa frase é lógica de negócio pura. Ela seria verdadeira num sistema escrito em Python, em Java, à mão num caderno. É exatamente o tipo de regra que separa um projeto que pensa sobre um problema de um CRUD que só guarda dados.
+
+Duas regras compõem a etapa: conflito de horário (5.2 a 5.6) e transição de status (5.7). A primeira é onde mora a dificuldade real — e a race condition que a torna o ponto de desaceleração mais importante do projeto.
+
+## 5.2 O que é um conflito
+
+Dois agendamentos conflitam quando seus intervalos de tempo se sobrepõem. Não quando começam juntos — quando se cruzam em qualquer ponto.
+
+É aqui que a decisão da Etapa 4 (guardar `inicio` e `fim`, não início + duração) paga. Com os dois extremos, o conflito vira uma comparação de intervalos:
+
+```
+Existente:        [────────────]
+                inicio        fim
+
+Conflita:              [────────────]     sobrepõe o fim
+Conflita:     [────────────]             sobrepõe o início
+Conflita:            [──────]            contido dentro
+Conflita:     [──────────────────────]  contém o existente
+NÃO conflita: [──]                       termina antes de começar
+NÃO conflita:                    [──]    começa depois de terminar
+```
+
+## 5.3 A regra de sobreposição, que quase todo mundo erra
+
+A intuição da maioria é listar os casos de conflito — "se começa dentro, ou termina dentro, ou contém...". Isso gera três ou quatro condições, é fácil esquecer uma, e some um caso.
+
+A forma correta é o oposto: é mais simples definir quando NÃO há conflito, e negar.
+
+Dois intervalos não se sobrepõem em apenas duas situações: um termina antes do outro começar, ou começa depois do outro terminar. Qualquer outra coisa é conflito. Então:
+
+```
+não conflita  ⟺  (novo.fim <= existente.inicio)  OU  (novo.inicio >= existente.fim)
+conflita      ⟺  (novo.inicio < existente.fim)  E  (novo.fim > existente.inicio)
+```
+
+Essa segunda linha é a regra inteira, em uma condição. Ela cobre os quatro casos de conflito do diagrama sem enumerá-los. Decorar os casos de conflito é frágil; derivar a negação dos dois casos de não-conflito é robusto. É o tipo de raciocínio que, mostrado numa entrevista, vale mais que o código em si.
+
+Atenção às bordas: um agendamento que termina às 15:00 e outro que começa às 15:00 **não** conflitam — por isso `<=` e `>=` na condição de não-conflito, não `<` e `>`. Encostar não é sobrepor.
+
+## 5.4 A checagem, como query
+
+Traduzida para o banco, a pergunta "este novo intervalo conflita com algo existente?" vira:
+
+```sql
+SELECT 1 FROM agendamento
+WHERE tenant_id = :meu_tenant           -- sempre, por causa da Etapa 2
+  AND status <> 'cancelado'             -- cancelado não ocupa horário
+  AND inicio < :novo_fim
+  AND fim    > :novo_inicio
+LIMIT 1;
+```
+
+Se retorna algo, há conflito. Repare em duas coisas:
+
+- O `tenant_id` está lá, como em toda query do projeto. Um conflito só existe dentro do mesmo negócio — a Barbearia A não conflita com a agenda da B. O isolamento da Etapa 2 e a regra de negócio da Etapa 5 se encontram nesta linha.
+- `status <> 'cancelado'` — um agendamento cancelado libera o horário. Isso liga a regra de conflito à regra de status (5.7): elas não são independentes.
+
+## 5.5 A armadilha: a race condition
+
+Aqui está o ponto que separa o agendamento ingênuo do agendamento correto, e é o coração desta etapa. Leia devagar, porque é sutil e é o tipo de bug que não aparece em teste comum.
+
+A implementação óbvia tem dois passos:
+
+```
+1. verifica se há conflito   (a query da 5.4)
+2. se não houver, insere o agendamento
+```
+
+Parece certo. E funciona — até dois pedidos chegarem ao mesmo tempo.
+
+Imagine dois clientes tentando marcar as 15:00 no mesmo instante:
+
+```
+Requisição A: verifica conflito → livre ✓
+Requisição B: verifica conflito → livre ✓   (A ainda não inseriu)
+Requisição A: insere 15:00
+Requisição B: insere 15:00                   ← dois agendamentos no mesmo horário
+```
+
+Ambas verificaram "livre" antes de qualquer uma inserir. As duas passam. O horário foi marcado duas vezes — exatamente o que a regra existia para impedir. Isso é uma **race condition**: o resultado depende de quem chega primeiro numa corrida entre requisições simultâneas, e a janela entre "verificar" e "inserir" é onde o bug mora.
+
+Por que é traiçoeiro: em desenvolvimento, testando sozinho, nunca acontece — suas requisições são uma de cada vez. Ele só aparece em produção, sob uso concorrente, de forma intermitente e difícil de reproduzir. É o pesadelo clássico de sistema de reserva, e conhecê-lo é o que demonstra maturidade além do "fiz funcionar na minha máquina".
+
+## 5.6 As defesas contra a race condition
+
+Há três formas de fechar a janela entre verificar e inserir, da mais fraca à mais forte:
+
+**Verificação simples (o furo).** Os dois passos separados da 5.5. Não é defesa — é o problema. Serve só para nomear o que se está corrigindo.
+
+**Constraint no banco (a defesa robusta).** O PostgreSQL tem uma constraint de exclusão (`EXCLUDE`) que faz o próprio banco recusar dois intervalos sobrepostos, com o tipo `tstzrange` e o operador de sobreposição. Não importa quantas requisições cheguem juntas: o banco serializa e a segunda inserção falha, porque a integridade é imposta pela estrutura, não pelo código. É o análogo exato da lição da Etapa 2 (não confie na memória do programador; deixe o banco impor) aplicado ao tempo em vez do tenant.
+
+**Lock transacional (a alternativa).** Envolver verificação e inserção numa transação que trava a faixa relevante, de modo que a segunda requisição espere a primeira terminar. Funciona, mas é mais fácil de errar que a constraint.
+
+**Decisão do v1:** a constraint de exclusão do PostgreSQL, com a verificação em código também — mas por outro motivo. A verificação prévia (5.4) existe para dar uma mensagem de erro amigável ("esse horário já está ocupado") no caso comum; a constraint existe para garantir a correção no caso raro de concorrência real. Uma cuida da experiência, a outra da integridade. Contar isso numa entrevista — "verifico no código pela mensagem, mas garanto no banco pela constraint, porque código sozinho tem race condition" — é uma resposta de nível sênior sobre um projeto de agendamento.
+
+## 5.7 A segunda regra: transição de status
+
+Um agendamento tem um ciclo de vida, e nem toda mudança de estado é válida.
+
+```
+      marcado ──────► concluído
+         │
+         └──────────► cancelado
+```
+
+Os estados e o que os liga:
+
+- **marcado** — o estado inicial (o default da Etapa 4)
+- **concluído** — o serviço foi realizado. Vem de "marcado"
+- **cancelado** — o agendamento foi desfeito. Vem de "marcado"
+
+O ponto de regra de negócio: as transições são restritas. Um agendamento "concluído" não pode voltar para "marcado". Um "cancelado" não pode ser "concluído". Um "concluído" não pode ser "cancelado" depois do fato. As setas do diagrama são as únicas mudanças permitidas; qualquer outra é rejeitada.
+
+Isso parece trivial e é justamente onde CRUDs ingênuos falham: eles deixam o status ser qualquer valor a qualquer momento, porque tratam status como "só mais um campo para editar". Modelar as transições válidas — uma pequena máquina de estados — é o que mostra que você pensa no ciclo de vida da entidade, não só nos seus campos. E conecta de volta à 5.4: cancelar libera o horário para conflito; concluir, não.
+
+## 5.8 Onde isso vive: a camada de serviço
+
+A decisão de arquitetura da Etapa 1 (seção 1.5) se concretiza aqui, na pasta `backend/app/servicos/`.
+
+A regra de conflito e a de transição de status não moram na rota HTTP. Uma função de serviço — `criar_agendamento(...)`, `mudar_status(...)` — recebe os dados já autenticados e aplica as regras. A rota só traduz HTTP: recebe o pedido, chama o serviço, devolve a resposta ou o erro.
+
+Por que isso importa, além de organização:
+
+- **Testável sem a API.** Você testa a regra de conflito chamando a função direto, sem subir servidor nem simular HTTP. Testes mais rápidos e focados.
+- **Reutilizável.** Se amanhã um agendamento for criado por outra via (um import, um job), a regra está num lugar só.
+- **É a fronteira borda/núcleo de novo.** A rota é borda (fala HTTP); o serviço é núcleo (decide o domínio). O núcleo não sabe que HTTP existe — o mesmo princípio dos outros dois projetos do portfólio.
+
+## 5.9 Como testar
+
+A regra de negócio é o lugar mais rico de testar do projeto, e o mais determinístico — regra é entrada e saída previsíveis. Aproveite:
+
+Conflito de horário:
+
+- Dois agendamentos em horários distintos → ambos aceitos
+- Novo que sobrepõe o fim de um existente → rejeitado
+- Novo que sobrepõe o início → rejeitado
+- Novo contido em um existente → rejeitado
+- Novo que contém um existente → rejeitado
+- Novo que encosta na borda (começa quando o outro termina) → aceito (o caso `<=` da 5.3)
+- Conflito só é checado dentro do mesmo tenant → agendamento no mesmo horário em outro tenant é aceito (a linha da 5.4)
+- Horário de um agendamento cancelado pode ser reusado → aceito
+
+Transição de status:
+
+- marcado → concluído → aceito
+- marcado → cancelado → aceito
+- concluído → marcado → rejeitado
+- cancelado → concluído → rejeitado
+
+Race condition (o teste que impressiona):
+
+- Duas criações simultâneas do mesmo horário → exatamente uma vence, a outra é rejeitada pela constraint. É mais difícil de escrever (exige simular concorrência), mas é o teste que prova que você fechou a janela da 5.5, e não só a verificação ingênua.
+
+O teste da borda (encostar não conflita) e o da race condition são os dois que mais denotam cuidado. O primeiro mostra que você pensou nos limites; o segundo, que você conhece o modo de falha que só aparece sob concorrência.
+
+## 5.10 Glossário desta etapa
+
+| Termo | O que é |
+|---|---|
+| **Regra de negócio** | Lógica que vem do domínio, não da tecnologia. Verdadeira em qualquer linguagem |
+| **Sobreposição de intervalos** | Dois períodos que se cruzam em qualquer ponto do tempo |
+| **Race condition** | Bug em que o resultado depende da ordem de requisições simultâneas |
+| **Janela verificar-inserir** | O intervalo entre checar o conflito e gravar, onde a race condition acontece |
+| **Constraint de exclusão (EXCLUDE)** | Recurso do PostgreSQL que faz o banco recusar intervalos sobrepostos |
+| **tstzrange** | Tipo do PostgreSQL que representa um intervalo de tempo com fuso |
+| **Máquina de estados** | O conjunto de estados de uma entidade e as transições válidas entre eles |
+| **Camada de serviço** | Onde a regra de negócio vive, separada da rota HTTP |
+
+---
+
 ## Próxima etapa
 
-**Etapa 5 — Regra de negócio:** o conflito de horário (a checagem de sobreposição que a modelagem já preparou com o índice composto) e a transição de status do agendamento.
+**Etapa 6 — CRUD de produção:** paginação, filtro, busca e validação nos recursos do domínio — não só inserir e listar.
