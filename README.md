@@ -20,6 +20,40 @@ docker compose up
 
 O backend aplica as migrations automaticamente ao subir (`alembic upgrade head`); não precisa rodar nada à parte. Crie o primeiro negócio pela tela de cadastro (`/registrar`) — não há usuário seed.
 
+Para parar: `Ctrl+C`. Para remover os containers: `docker compose down` (acrescente `-v` para também apagar os dados do Postgres e começar do zero).
+
+### Modo desenvolvimento (sem Docker, com hot-reload)
+
+Útil para editar o código e ver o resultado sem reconstruir imagem. Precisa de Python 3.12+, Node 20+ e um Postgres acessível (o mais simples é subir só o banco via Docker: `docker compose up postgres`).
+
+**Backend** — um terminal:
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate          # Linux/Mac: source .venv/bin/activate
+pip install -r requirements.txt
+
+# aponta para o Postgres do docker-compose (ou outro Postgres seu)
+set DATABASE_URL=postgresql://postgres:postgres@localhost:5432/projeto_agenda   # Linux/Mac: export
+set SECRET_KEY=uma-chave-qualquer-para-dev
+
+alembic upgrade head
+uvicorn app.main:app --reload
+```
+
+API em http://localhost:8000, recarregando a cada alteração em `backend/app/`.
+
+**Frontend** — outro terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Interface em http://localhost:5173, recarregando a cada alteração em `frontend/src/`. Por padrão já aponta para `http://localhost:8000`; para mudar, crie `frontend/.env.local` com `VITE_API_URL=http://outro-endereco`.
+
 ## O que existe
 
 Vários negócios operando isolados na mesma aplicação, com autenticação por papel (dono/atendente), uma regra de conflito de horário à prova de concorrência, CRUD de produção com paginação/filtro/busca, e uma interface de agenda visual. As sete etapas de construção estão documentadas passo a passo em [`docs/documentacao.md`](docs/documentacao.md).
