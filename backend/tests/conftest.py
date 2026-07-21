@@ -90,6 +90,13 @@ def criar_cliente(session: Session, tenant_id: int, nome: str = "Cliente de test
     return cliente
 
 
+def autenticar(client: TestClient, email: str, senha: str = "senha-correta") -> dict:
+    """Login via rota real e devolve o header Authorization pronto,
+    para os testes de CRUD (Etapa 6) que batem na API de verdade."""
+    token = client.post("/auth/login", json={"email": email, "senha": senha}).json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def criar_servico(
     session: Session,
     tenant_id: int,

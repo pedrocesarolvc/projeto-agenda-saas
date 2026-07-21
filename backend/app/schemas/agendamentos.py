@@ -1,5 +1,5 @@
 """
-Formato de entrada/saida das rotas de agendamento (Etapa 5).
+Formato de entrada/saida das rotas de agendamento (Etapas 5 e 6).
 """
 
 from datetime import datetime
@@ -18,6 +18,18 @@ class CriarAgendamentoRequest(BaseModel):
 
 class MudarStatusRequest(BaseModel):
     status: StatusAgendamento
+
+
+class RemarcarAgendamentoRequest(BaseModel):
+    """
+    Etapa 6, secao 6.6: so inicio/fim. Nem tenant_id nem status
+    aparecem aqui -- o primeiro nunca se atualiza, o segundo tem rota
+    propria (MudarStatusRequest). Nao e um update generico do
+    agendamento inteiro; e a operacao especifica "remarcar".
+    """
+
+    inicio: datetime
+    fim: datetime
 
 
 class AgendamentoResponse(BaseModel):

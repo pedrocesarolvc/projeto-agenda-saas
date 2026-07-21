@@ -10,7 +10,7 @@
 | **3** | Autenticação e permissões — JWT por tenant e perfis | ✅ escrita |
 | **4** | Modelagem — o desenho relacional | ✅ escrita |
 | **5** | Regra de negócio — conflito de horário e status | ✅ escrita |
-| 6 | CRUD de produção — paginação, filtro, busca, validação | ⬜ pendente |
+| **6** | CRUD de produção — paginação, filtro, busca, validação | ✅ escrita |
 | 7 | Entrega — API, interface, testes e Docker | ⬜ pendente |
 
 ---
@@ -758,6 +758,167 @@ O teste da borda (encostar não conflita) e o da race condition são os dois que
 
 ---
 
+# Etapa 6 — CRUD de produção
+
+## 6.1 Por que esta etapa existe
+
+"CRUD" soa como a parte trivial — criar, ler, atualizar, deletar, o primeiro tutorial de qualquer framework. E é justamente por parecer trivial que a maioria dos portfólios o faz mal: uma rota que lista tudo, sem paginar; um cadastro que aceita qualquer coisa, sem validar; uma busca que não existe.
+
+A diferença entre "CRUD de tutorial" e "CRUD de produção" é o que esta etapa cobre — e é exatamente o que uma vaga quer ver, porque é 80% do que o profissional faz no dia a dia. Um agendamento que aplica a race condition da Etapa 5 impressiona uma vez; uma listagem que pagina, filtra e busca direito é o que mostra que você já trabalhou com dados de verdade, não com as três linhas de exemplo do tutorial.
+
+Este é o projeto do portfólio que prova o comum bem-feito. A Etapa 6 é o coração desse "bem-feito".
+
+## 6.2 O que separa tutorial de produção
+
+| Aspecto | CRUD de tutorial | CRUD de produção |
+|---|---|---|
+| Listagem | Retorna a tabela inteira | Pagina: devolve um pedaço por vez |
+| Filtro | Nenhum | Por status, por data, por profissional |
+| Busca | Nenhuma | Por nome do cliente, por trecho |
+| Ordenação | A do banco, aleatória | Explícita: por data, por criação |
+| Validação | Aceita o que vier | Rejeita o inválido com mensagem clara |
+| Erro | Estoura 500 | Responde com status e motivo |
+| Update | Substitui tudo | Atualiza o permitido, respeita regras |
+
+Cada linha da direita é uma decisão pequena. Juntas, são a diferença entre uma API que quebra no primeiro uso real e uma que aguenta.
+
+## 6.3 Paginação: a mais importante, e a mais esquecida
+
+Uma barbearia com dois anos de uso tem milhares de agendamentos. Uma rota `GET /agendamentos` que devolve todos tem três problemas de uma vez: trava o banco (varre a tabela inteira), estoura a memória do servidor (carrega tudo), e entope a rede (manda tudo para uma tela que mostra vinte). Em produção, isso não é lentidão — é queda.
+
+Paginar é devolver um pedaço por vez. Há duas formas, e vale conhecer as duas:
+
+**Offset/limit (a comum).** "Pule os primeiros 40, me dê os próximos 20." Simples, e é o que o v1 usa.
+
+```sql
+SELECT ... FROM agendamento
+WHERE tenant_id = :meu_tenant AND ...
+ORDER BY inicio
+LIMIT 20 OFFSET 40;
+```
+
+**Cursor (a robusta).** Em vez de "pule 40", diz "me dê os 20 depois deste ponto". É mais eficiente em tabelas enormes e não "pula" registros quando dados são inseridos durante a navegação. Mais complexa; fica como menção de roadmap.
+
+**Decisão do v1:** offset/limit, com um teto no `limit` (ex.: máximo 100 por página). O teto importa: sem ele, alguém pede `limit=999999` e derruba justamente o que a paginação protegia. A resposta inclui o total de registros e a página atual, para o frontend montar a navegação.
+
+O ponto que denota experiência: **toda listagem pagina, sem exceção.** Mesmo a de serviços, que "nunca vai ter muitos". Porque "nunca vai ter muitos" é a suposição que envelhece pior em software, e uma API consistente pagina tudo por princípio.
+
+## 6.4 Filtro e busca: parecidas, diferentes
+
+**Filtro** é recorte por critério exato: agendamentos com `status = marcado`, do dia 20, do profissional X. O usuário escolhe de um conjunto conhecido de opções.
+
+**Busca** é por texto livre e aproximado: clientes cujo nome contém "Silva". O usuário digita, e o sistema procura correspondências parciais.
+
+Ambas viram condições na query, sempre junto do `tenant_id` — filtrar ou buscar nunca pode furar o isolamento da Etapa 2:
+
+```sql
+WHERE tenant_id = :meu_tenant           -- sempre primeiro
+  AND (:status IS NULL OR status = :status)      -- filtro opcional
+  AND (:dia IS NULL OR inicio::date = :dia)       -- filtro opcional
+  AND (:busca IS NULL OR cliente.nome ILIKE :busca) -- busca opcional
+```
+
+O padrão `(:param IS NULL OR ...)` é o que torna cada filtro opcional e combinável: se o parâmetro não veio, a condição não restringe; se veio, restringe. Isso permite qualquer combinação — "marcados, do dia 20, do cliente Silva" — sem escrever uma query para cada combinação possível.
+
+Para a busca, `ILIKE` (o `LIKE` sem diferenciar maiúscula/minúscula do PostgreSQL) resolve o v1. Busca textual mais séria — acentos, erros de digitação — é o full-text search do Postgres, e fica no roadmap. Não confunda com o RAG: aqui a busca é literal (o nome contém o texto), não semântica. Domínios diferentes, ferramentas diferentes.
+
+## 6.5 Validação: a fronteira de entrada
+
+Toda entrada da API é suspeita até validada. É a mesma postura do upload no RAG e do payload no SecureFlow: o que vem de fora não é confiável.
+
+O Pydantic (da stack, já usado nos outros dois projetos) faz a primeira camada de graça — tipos, campos obrigatórios, formatos. Um `inicio` que não é data, um `preco` negativo, um campo faltando: o Pydantic rejeita antes de a lógica rodar, com mensagem clara e status 422.
+
+Mas há duas camadas de validação, e confundi-las é um erro comum:
+
+- **Validação de formato (Pydantic).** "O dado tem a forma certa?" — é uma data? o preço é um número? o e-mail parece e-mail? Genérica, independe do domínio.
+- **Validação de regra de negócio (camada de serviço).** "O dado faz sentido aqui?" — o horário está livre (Etapa 5)? o cliente pertence a este tenant (Etapa 4)? o serviço existe? Essa não é sobre forma, é sobre o domínio, e mora nos serviços, não no schema.
+
+A regra: Pydantic barra o malformado; o serviço barra o que é bem-formado mas inválido no contexto. `"abc"` como data para o Pydantic; "marcar num horário ocupado" para o serviço. As duas camadas, na ordem — forma primeiro, sentido depois.
+
+## 6.6 Update: nem tudo se atualiza
+
+O "U" do CRUD é onde regras de negócio silenciosas se escondem.
+
+Um `PUT` ingênuo substitui o registro inteiro com o que veio. Mas num agendamento, isso é perigoso:
+
+- O `tenant_id` nunca se atualiza — mudar o tenant de um registro é movê-lo para outro negócio. Deve ser impossível.
+- O `status` não muda por aqui — ele tem transições próprias (Etapa 5), com regras. Muda por uma rota dedicada, não por um update geral.
+- Remarcar (mudar `inicio`/`fim`) precisa re-checar conflito. Um update que move o horário sem rodar a regra da Etapa 5 recria exatamente o problema que ela resolveu.
+
+Por isso o update de produção é parcial e consciente: aceita alterar só os campos que fazem sentido, ignora ou rejeita os que não, e dispara as regras de negócio que a mudança exige. "Atualizar o agendamento" não é uma operação — são várias, cada uma com suas regras.
+
+Sobre o "D" de delete: em sistemas com histórico, raramente se apaga de verdade. Um agendamento cancelado vira `status = cancelado` (soft delete), não um `DELETE` no banco — o histórico importa para relatórios e para o próprio negócio. O delete físico fica para dados sem valor histórico.
+
+## 6.7 Respostas de erro que ajudam
+
+Uma API de produção erra com clareza. A diferença:
+
+**Ruim:** status 500, corpo vazio. O frontend não sabe o que houve; o usuário vê "algo deu errado".
+
+**Bom:** status certo (422 para validação, 403 para permissão, 404 para inexistente, 409 para conflito de horário) e um corpo que diz o quê: "horário indisponível", "cliente não encontrado".
+
+O 409 (Conflict) para o choque de horário da Etapa 5 é o detalhe que fecha o arco: a regra de negócio se manifesta, na borda HTTP, como um código de status semântico. Um frontend que recebe 409 pode mostrar "esse horário acabou de ser ocupado" em vez de um erro genérico — e isso, na interface caprichada deste projeto, é a diferença entre parecer profissional e parecer quebrado.
+
+## 6.8 Onde isso vive no código
+
+Esta etapa se espalha pela estrutura da Etapa 1, sem criar pasta nova:
+
+- `rotas/` — os endpoints ganham parâmetros de paginação, filtro e busca (query params)
+- `schemas/` — schemas Pydantic separados para criar, atualizar e responder (o de update permite campos opcionais; o de resposta esconde o que não deve vazar)
+- `servicos/` — a validação de regra de negócio e o update consciente
+- `core/` — um helper de paginação reutilizável, para não repetir `limit`/`offset` em cada rota
+
+O detalhe de design: schemas de entrada e de saída são diferentes. O schema de resposta de um agendamento não devolve o `tenant_id` cru nem campos internos — devolve o que o cliente precisa ver. Separar os dois é o que evita vazar estrutura interna pela API, e é prática que um avaliador reconhece na hora.
+
+## 6.9 Como testar
+
+CRUD é determinístico e ri de ser testado. Os casos que provam "produção", não "tutorial":
+
+Paginação:
+
+- Página 1 com `limit` 20 devolve 20; página 2 devolve os próximos
+- O total de registros vem correto
+- `limit` acima do teto é limitado ao teto, não obedecido cegamente
+- Paginação respeita o tenant: A nunca vê contagem ou registro de B
+
+Filtro e busca:
+
+- Filtrar por status devolve só aquele status
+- Combinação de filtros (status + dia) funciona junta
+- Busca por nome parcial encontra; busca sem correspondência devolve vazio, não erro
+- Filtro e busca nunca trazem dado de outro tenant (a Etapa 2, de novo, em cada recorte)
+
+Validação:
+
+- Dado malformado → 422 com mensagem (camada Pydantic)
+- Dado bem-formado mas inválido no contexto → erro do serviço (horário ocupado → 409)
+
+Update:
+
+- Tentar mudar `tenant_id` via update → ignorado ou rejeitado
+- Remarcar para horário ocupado → rejeitado (a regra da Etapa 5 dispara no update)
+- Update parcial altera só o campo enviado, preserva o resto
+
+O teste "filtro não fura tenant" e o "update não muda tenant" são os que mais importam: eles provam que as conveniências de produção desta etapa não abriram um buraco no isolamento das etapas anteriores. Toda funcionalidade nova é uma chance de furar o tenant — e cada teste desses fecha a chance.
+
+## 6.10 Glossário desta etapa
+
+| Termo | O que é |
+|---|---|
+| **Paginação** | Devolver os resultados em pedaços, não todos de uma vez |
+| **Offset/limit** | Paginação por "pule N, devolva M". Simples, usada no v1 |
+| **Cursor** | Paginação por "devolva os depois deste ponto". Mais robusta, roadmap |
+| **Filtro** | Recorte por critério exato (status, data) |
+| **Busca** | Recorte por texto livre e parcial (nome contém "Silva") |
+| **ILIKE** | Comparação de texto do PostgreSQL sem diferenciar maiúsculas |
+| **Validação de formato** | "O dado tem a forma certa?" — Pydantic, genérica |
+| **Validação de regra** | "O dado faz sentido aqui?" — camada de serviço, do domínio |
+| **Soft delete** | "Apagar" marcando como inativo/cancelado, preservando o histórico |
+| **422 / 409** | Status HTTP: dado inválido (422), conflito como horário ocupado (409) |
+| **Schema de entrada vs. saída** | Modelos separados para o que a API recebe e o que devolve |
+
+---
+
 ## Próxima etapa
 
-**Etapa 6 — CRUD de produção:** paginação, filtro, busca e validação nos recursos do domínio — não só inserir e listar.
+**Etapa 7 — Entrega:** API, interface, testes e Docker — o que falta para o projeto rodar de ponta a ponta com um `docker-compose up`.
