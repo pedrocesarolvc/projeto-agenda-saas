@@ -1,10 +1,14 @@
 """
-Rotas de autenticacao (Etapa 3).
+Rotas de autenticacao (Etapas 3 e 7).
 
-POST /auth/login  -> confere credenciais, emite o token (secao 3.2-3.3)
-GET  /auth/me      -> devolve o que get_usuario_atual extraiu do token;
-                      existe para toda outra rota protegida seguir o
-                      mesmo padrao (Depends(get_usuario_atual)).
+POST /auth/registrar-negocio -> cria tenant + dono, devolve token
+                                  (secao 7.2, "porta de entrada limpa")
+POST /auth/login              -> confere credenciais, emite o token
+                                  (secao 3.2-3.3)
+GET  /auth/me                  -> devolve o que get_usuario_atual
+                                  extraiu do token; existe para toda
+                                  outra rota protegida seguir o mesmo
+                                  padrao (Depends(get_usuario_atual)).
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,9 +19,32 @@ from app.auth.jwt import criar_token
 from app.auth.security import verificar_senha
 from app.database import get_session
 from app.modelos.usuario import Usuario
-from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.auth import LoginRequest, RegistrarNegocioRequest, TokenResponse
+from app.servicos.erros import EmailJaCadastradoError
+from app.servicos.negocios import registrar_negocio
 
 router = APIRouter(prefix="/auth", tags=["autenticacao"])
+
+
+@router.post(
+    "/registrar-negocio", response_model=TokenResponse, status_code=status.HTTP_201_CREATED
+)
+def registrar(
+    dados: RegistrarNegocioRequest, session: Session = Depends(get_session)
+) -> TokenResponse:
+    try:
+        dono = registrar_negocio(
+            session,
+            nome_negocio=dados.nome_negocio,
+            nome_dono=dados.nome_dono,
+            email=dados.email,
+            senha=dados.senha,
+        )
+    except EmailJaCadastradoError as erro:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(erro))
+
+    token = criar_token(usuario_id=dono.id, tenant_id=dono.tenant_id, papel=dono.papel.value)
+    return TokenResponse(access_token=token)
 
 
 @router.post("/login", response_model=TokenResponse)

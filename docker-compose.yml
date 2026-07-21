@@ -1,0 +1,50 @@
+# Etapa 7, secao 7.6: sobe os tres servicos da estrutura da Etapa 1
+# com um unico comando. Postgres padrao basta -- diferente do RAG,
+# nao ha extensao especial a instalar: a EXCLUDE constraint da
+# Etapa 5 (secao 5.6) usa GiST/btree_gist, que ja vem no Postgres
+# oficial (a migration cria a extensao sozinha, ver alembic/versions).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: projeto_agenda
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/projeto_agenda
+      # Trocar por um valor forte em producao (Etapa 3) -- aqui e so
+      # o suficiente para o docker-compose subir de forma consistente.
+      SECRET_KEY: troque-esta-chave-em-producao-0123456789abcdef
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # O navegador do usuario acessa o backend publicado no host,
+        # nao o hostname interno "backend" da rede do compose.
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

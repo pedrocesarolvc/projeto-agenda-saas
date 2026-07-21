@@ -11,7 +11,7 @@
 | **4** | Modelagem — o desenho relacional | ✅ escrita |
 | **5** | Regra de negócio — conflito de horário e status | ✅ escrita |
 | **6** | CRUD de produção — paginação, filtro, busca, validação | ✅ escrita |
-| 7 | Entrega — API, interface, testes e Docker | ⬜ pendente |
+| **7** | Entrega — API, interface, testes e Docker | ✅ escrita |
 
 ---
 
@@ -919,6 +919,127 @@ O teste "filtro não fura tenant" e o "update não muda tenant" são os que mais
 
 ---
 
-## Próxima etapa
+# Etapa 7 — Entrega
 
-**Etapa 7 — Entrega:** API, interface, testes e Docker — o que falta para o projeto rodar de ponta a ponta com um `docker-compose up`.
+## 7.1 O que muda aqui
+
+As seis etapas anteriores construíram o sistema. Esta o torna usável e avaliável — por dois públicos que decidem o destino do projeto: o dono da barbearia que vai operar a agenda, e o recrutador que abre o repositório e decide em dois minutos se olha o resto.
+
+Diferente dos outros dois projetos do portfólio, aqui esses dois públicos pesam igual. No RAG e no SecureFlow o valor morava no backend, e a interface era vitrine. Neste, a interface é parte do que se prova — porque este é o projeto que se parece com o que a maioria das vagas constrói: um SaaS de produto para um usuário final. A Etapa 7 é onde isso se realiza.
+
+## 7.2 A API: a superfície coerente
+
+Até aqui cada etapa é uma peça. A API as reúne numa superfície consistente. O conjunto de endpoints do v1, organizados por recurso:
+
+| Recurso | Rotas | Etapas que aciona |
+|---|---|---|
+| Auth | `POST /auth/login`, `POST /auth/registrar-negocio` | 3 (e cria o tenant, 2) |
+| Serviços | CRUD completo em `/servicos` | 6, permissão de dono (3) |
+| Clientes | CRUD completo em `/clientes` | 6 |
+| Agendamentos | CRUD em `/agendamentos` + `PATCH /agendamentos/{id}/status` | 5, 6 |
+| Agenda | `GET /agendamentos?dia=&status_filtro=&cliente=` | 5, 6 |
+
+Duas decisões de coerência que valem em qualquer API:
+
+**Consistência acima de tudo.** Todas as listagens paginam do mesmo jeito, todos os erros têm o mesmo formato, todos os recursos seguem o mesmo padrão de rota. Uma API onde `/clientes` e `/servicos` se comportam diferente é uma API que irrita quem a consome. Consistência é o que faz a API parecer projetada, não acumulada.
+
+**O status tem rota própria** (`PATCH .../status`), separada do update geral. É a decisão da Etapa 6 (update consciente) e da Etapa 5 (transições restritas) se materializando na forma da API: mudar status não é "editar o agendamento", é uma operação com regras próprias, e merece endpoint próprio.
+
+O `main.py` permanece fino, como nos outros projetos: recebe, valida com Pydantic, delega ao serviço, devolve. Toda a lógica mora nas camadas de baixo — a rota só traduz HTTP.
+
+Uma lacuna real que a revisão de coerência desta etapa encontrou: a Etapa 3 (seção 3.5) já tinha decidido que gerenciar serviços é ação de dono, não de atendente — mas o CRUD de serviços da Etapa 6 nunca aplicou essa restrição nas rotas de escrita. Corrigido aqui (`exigir_papel(Papel.DONO)` em `POST`/`PUT`/`DELETE /servicos`), com os testes que provam que um atendente recebe 403 nas três, mas continua enxergando o catálogo para poder marcar um agendamento.
+
+## 7.3 A interface: onde este projeto se diferencia
+
+Este é o ponto que separa o terceiro projeto dos outros dois. A interface não pode ser funcional-e-feia; ela é parte da prova.
+
+O que ela precisa entregar, em ordem de peso:
+
+**O calendário de agenda.** É a tela central e o melhor print do portfólio inteiro. Uma visão de dia/semana onde os agendamentos aparecem como blocos no tempo, com cor por status, e onde marcar um horário é visual — clicar num espaço livre, não preencher um formulário cru. Uma biblioteca de calendário madura (FullCalendar, ou equivalente no ecossistema React) faz o trabalho pesado; o valor está em integrá-la bem com o backend.
+
+**O login e a troca de contexto de negócio.** A porta de entrada, limpa. E, como o sistema é multi-tenant, a interface sempre deixa claro em qual negócio o usuário está — o tenant não é invisível, é parte da experiência.
+
+**As telas de CRUD, com as conveniências da Etapa 6 visíveis.** A lista de clientes com busca por nome, a de agendamentos com filtro por dia e status, paginação real. As funcionalidades da Etapa 6 não são só endpoints — elas aparecem na tela como campos de busca, seletores de filtro, controles de página.
+
+**A permissão refletida na interface** (com a ressalva da Etapa 3). O atendente não vê o botão de gerenciar serviços — porque a interface esconde o que ele não pode. Mas, como a Etapa 3 cravou, esconder é conveniência; a segurança real está no backend. A interface bonita e o backend seguro são as duas metades, e nenhuma substitui a outra.
+
+**Decisão de stack:** React com TypeScript, shadcn/ui e Tailwind. Não é firula — é a stack que as vagas brasileiras pedem, e usá-la é o mesmo movimento de "construir o que o mercado usa" que guiou os três projetos. Um calendário responsivo e bem-acabado é, provavelmente, a imagem que mais vai representar seu portfólio.
+
+## 7.4 O feedback de erro na interface
+
+A conexão entre a Etapa 6 e a experiência: os códigos de status semânticos viram mensagens humanas.
+
+- Um 409 (horário ocupado, da race condition da Etapa 5) vira **"Esse horário acabou de ser reservado. Escolha outro."**
+- Um 422 (validação) vira o campo do formulário destacado com o motivo.
+- Um 403 (permissão) idealmente nem acontece, porque a interface escondeu o controle — mas se acontecer, uma mensagem clara, não um erro cru.
+
+Numa interface caprichada, é isso que separa "profissional" de "quebrado": o sistema erra com elegância. O 409 é o mais importante — ele é a regra de negócio da Etapa 5 chegando até o usuário final como uma mensagem que faz sentido, e não como uma tela branca. A race condition da Etapa 5 → o status semântico da Etapa 6 → a mensagem humana da Etapa 7: a regra de negócio atravessa três etapas e chega ao usuário como algo que faz sentido.
+
+## 7.5 Testes de ponta a ponta
+
+Cada etapa tem seus testes. Faltam os que atravessam o sistema inteiro, e no v1 três provam que o conjunto funciona:
+
+**O fluxo feliz completo:** registrar um negócio → logar → cadastrar um serviço → cadastrar um cliente → marcar um agendamento → vê-lo na agenda. Se esse caminho passa, o sistema funciona de ponta a ponta.
+
+**O teste dos dois tenants, no nível da API:** dois negócios, e um jamais alcança o dado do outro por nenhuma rota — nem listando, nem buscando, nem por id, nem filtrando, nem editando. É o teste que prova, de fora, que o isolamento da Etapa 2 sobreviveu a todas as conveniências que vieram depois. É o teste mais valioso do portfólio inteiro: a prova executável de que "eu sei fazer multi-tenancy sem vazar dados".
+
+**O teste de conflito ponta a ponta:** marcar um horário, tentar marcar outro sobreposto, receber 409. A regra da Etapa 5 vista pela borda.
+
+Esses três, verdes (`tests/test_e2e.py`), são o atestado do projeto.
+
+## 7.6 Docker: clona e roda
+
+Como no RAG, o passo de maior retorno da entrega. Um `docker-compose.yml` que sobe os três serviços da estrutura da Etapa 1:
+
+- **backend** (FastAPI + as sete etapas), aplicando as migrations automaticamente ao subir
+- **frontend** (a interface React, compilada e servida por nginx)
+- **postgres** — e aqui, diferente do RAG, o Postgres padrão basta; não há extensão especial a instalar (a `EXCLUDE` constraint da Etapa 5 cria sua própria extensão `btree_gist` via migration)
+
+`docker compose up`, e o avaliador tem o sistema inteiro — API, interface e banco — rodando na máquina dele. A distância entre "vi o repositório" e "estou marcando um horário na interface" vira um comando.
+
+## 7.7 O README: a vitrine
+
+Mais gente lê o README do que roda o código — e neste projeto, mais ainda, porque o apelo é visual. A ordem que funciona:
+
+1. Uma frase do que é.
+2. Um GIF da agenda funcionando — aqui, mais que nos outros dois, a imagem carrega o projeto.
+3. Como rodar — os comandos do Docker.
+4. As decisões de arquitetura, com o porquê — esta seção é a entrevista adiantada.
+5. Limitações e roadmap — o que ficou de fora e viria depois.
+
+## 7.8 O arco deste projeto
+
+| Etapa | O que provou |
+|---|---|
+| 1 | Escopo enxuto — decidir o tamanho, não fazer tudo |
+| 2 | Multi-tenancy — isolar, e não confiar na memória do programador |
+| 3 | Auth por tenant — a identidade que vem do token, nunca do cliente |
+| 4 | Modelagem — a estrutura que sustenta a regra, e a integridade entre tenants |
+| 5 | Regra de negócio — o conflito, a race condition, a máquina de estados |
+| 6 | CRUD de produção — o comum, bem-feito |
+| 7 | Entrega — a experiência de produto que torna tudo visível |
+
+O fio condutor, que vale dizer em entrevista quando perguntarem sobre este projeto: ele parece um CRUD e não é. Debaixo do agendamento há isolamento de dados imposto pela arquitetura, uma race condition fechada pelo banco, uma máquina de estados, e uma API que aguenta uso real. O "feijão-com-arroz" bem-feito é mais difícil do que parece — e provar que você o faz bem é o que remove a última dúvida de um recrutador.
+
+E o fecho que amarra todo o portfólio: os três projetos contam uma história única — isolamento de dados como reflexo, em três domínios. PII que não escapa no SecureFlow, resposta que não inventa além da fonte no RAG, tenant que não vê o dado do outro no Agenda. Segurança, IA aplicada e produto: três faces, uma disciplina.
+
+## 7.9 Glossário desta etapa
+
+| Termo | O que é |
+|---|---|
+| **Endpoint** | Uma rota da API |
+| **Consistência de API** | Todos os recursos seguindo os mesmos padrões (paginação, erro, rota) |
+| **Teste de ponta a ponta (E2E)** | Teste que exercita o sistema inteiro, do registro à agenda |
+| **docker-compose** | Sobe backend, frontend e banco com um comando |
+| **Biblioteca de calendário** | Componente de UI que renderiza a agenda visual (ex.: FullCalendar) |
+| **README** | A vitrine do projeto — aqui, especialmente visual |
+
+---
+
+## Fim da documentação
+
+As sete etapas estão escritas. O que existe ao final:
+
+Um SaaS de agendamento multi-tenant onde vários negócios operam isolados, com autenticação por papel, uma regra de conflito de horário à prova de concorrência, CRUD de produção com paginação, filtro e busca, e uma interface de agenda que se apresenta. Empacotado em Docker, testado de ponta a ponta, documentado decisão por decisão.
+
+O roadmap — paginação por cursor, full-text search, múltiplos profissionais, notificações, recorrência, relatórios, autoatendimento do cliente — fica no README como o caminho da v2. Não como dívida: como mapa de quem sabe até onde foi e por quê.

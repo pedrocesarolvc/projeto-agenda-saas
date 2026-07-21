@@ -1,6 +1,11 @@
 """
 Etapa 6, secao 6.9 — CRUD de servicos: sempre pagina (mesmo "sem ter
 muitos", secao 6.3), valida preco/duracao, e isola por tenant.
+
+Os testes de permissao no fim do arquivo sao da Etapa 7 (secao 7.2):
+a revisao de coerencia da API achou que a tabela de permissoes da
+Etapa 3 (secao 3.5, "servicos e dono, nao atendente") nunca tinha
+sido aplicada nas rotas de escrita.
 """
 
 from app.modelos.usuario import Papel
@@ -111,3 +116,65 @@ def test_obter_servico_de_outro_tenant_devolve_404(client, session):
     resposta = client.get(f"/servicos/{servico_de_b.id}", headers=headers)
 
     assert resposta.status_code == 404
+
+
+def test_atendente_nao_cria_servico(client, session):
+    tenant = criar_tenant(session)
+    criar_usuario(session, tenant.id, "atendente@a.com", papel=Papel.ATENDENTE)
+    headers = autenticar(client, "atendente@a.com")
+
+    resposta = client.post(
+        "/servicos",
+        headers=headers,
+        json={"nome": "Corte", "duracao_minutos": 30, "preco": "40.00"},
+    )
+
+    assert resposta.status_code == 403
+
+
+def test_atendente_nao_atualiza_servico(client, session):
+    tenant = criar_tenant(session)
+    criar_usuario(session, tenant.id, "atendente@a.com", papel=Papel.ATENDENTE)
+    servico = criar_servico(session, tenant.id)
+    headers = autenticar(client, "atendente@a.com")
+
+    resposta = client.put(f"/servicos/{servico.id}", headers=headers, json={"preco": "1.00"})
+
+    assert resposta.status_code == 403
+
+
+def test_atendente_nao_remove_servico(client, session):
+    tenant = criar_tenant(session)
+    criar_usuario(session, tenant.id, "atendente@a.com", papel=Papel.ATENDENTE)
+    servico = criar_servico(session, tenant.id)
+    headers = autenticar(client, "atendente@a.com")
+
+    resposta = client.delete(f"/servicos/{servico.id}", headers=headers)
+
+    assert resposta.status_code == 403
+
+
+def test_atendente_pode_listar_e_ver_servicos(client, session):
+    """O atendente precisa VER os servicos para marcar um agendamento
+    -- so nao pode alterar o catalogo."""
+    tenant = criar_tenant(session)
+    criar_usuario(session, tenant.id, "atendente@a.com", papel=Papel.ATENDENTE)
+    servico = criar_servico(session, tenant.id)
+    headers = autenticar(client, "atendente@a.com")
+
+    assert client.get("/servicos", headers=headers).status_code == 200
+    assert client.get(f"/servicos/{servico.id}", headers=headers).status_code == 200
+
+
+def test_dono_ainda_gerencia_servicos_normalmente(client, session):
+    """Nao regride o caso feliz: dono continua fazendo tudo."""
+    tenant = criar_tenant(session)
+    criar_usuario(session, tenant.id, "dono@a.com", papel=Papel.DONO)
+    headers = autenticar(client, "dono@a.com")
+
+    criado = client.post(
+        "/servicos",
+        headers=headers,
+        json={"nome": "Corte", "duracao_minutos": 30, "preco": "40.00"},
+    )
+    assert criado.status_code == 201

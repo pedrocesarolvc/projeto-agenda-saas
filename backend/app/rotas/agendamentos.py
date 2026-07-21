@@ -18,7 +18,7 @@ from app.auth.dependencies import get_usuario_atual
 from app.core.paginacao import Pagina, ParametrosPaginacao, parametros_paginacao
 from app.core.tenancy import get_tenant_id_atual
 from app.database import get_session
-from app.modelos.agendamento import StatusAgendamento
+from app.modelos.agendamento import Agendamento, StatusAgendamento
 from app.schemas.agendamentos import (
     AgendamentoResponse,
     CriarAgendamentoRequest,
@@ -41,6 +41,26 @@ from app.servicos.erros import (
 router = APIRouter(
     prefix="/agendamentos", tags=["agendamentos"], dependencies=[Depends(get_usuario_atual)]
 )
+
+
+def _para_resposta(agendamento: Agendamento) -> AgendamentoResponse:
+    """
+    cliente_nome/servico_nome nao sao atributos do Agendamento --
+    vem dos relacionamentos da Etapa 4 (agendamento.cliente,
+    agendamento.servico), lazy-loaded aqui, na borda, porque e a
+    rota quem decide o que a interface precisa ver (secao 6.8: o
+    schema de resposta esconde/adiciona o que o cliente precisa).
+    """
+    return AgendamentoResponse(
+        id=agendamento.id,
+        cliente_id=agendamento.cliente_id,
+        servico_id=agendamento.servico_id,
+        inicio=agendamento.inicio,
+        fim=agendamento.fim,
+        status=agendamento.status,
+        cliente_nome=agendamento.cliente.nome,
+        servico_nome=agendamento.servico.nome,
+    )
 
 
 @router.post("", response_model=AgendamentoResponse, status_code=status.HTTP_201_CREATED)
@@ -66,7 +86,7 @@ def criar(
     except ConflitoDeHorarioError as erro:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(erro))
 
-    return AgendamentoResponse.model_validate(agendamento)
+    return _para_resposta(agendamento)
 
 
 @router.get("", response_model=Pagina[AgendamentoResponse])
@@ -86,7 +106,7 @@ def listar(
         session, tenant_id, parametros, status_filtro=status_filtro, dia=dia, busca_cliente=cliente
     )
     return Pagina[AgendamentoResponse](
-        itens=[AgendamentoResponse.model_validate(item) for item in itens],
+        itens=[_para_resposta(item) for item in itens],
         total=total,
         pagina=parametros.pagina,
         tamanho_pagina=parametros.tamanho_pagina,
@@ -100,9 +120,7 @@ def obter(
     session: Session = Depends(get_session),
 ) -> AgendamentoResponse:
     try:
-        return AgendamentoResponse.model_validate(
-            obter_agendamento(session, tenant_id, agendamento_id)
-        )
+        return _para_resposta(obter_agendamento(session, tenant_id, agendamento_id))
     except ReferenciaDeOutroTenantError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="agendamento nao encontrado")
 
@@ -121,7 +139,7 @@ def alterar_status(
     except TransicaoDeStatusInvalidaError as erro:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(erro))
 
-    return AgendamentoResponse.model_validate(agendamento)
+    return _para_resposta(agendamento)
 
 
 @router.patch("/{agendamento_id}", response_model=AgendamentoResponse)
@@ -140,4 +158,4 @@ def remarcar(
     except ConflitoDeHorarioError as erro:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(erro))
 
-    return AgendamentoResponse.model_validate(agendamento)
+    return _para_resposta(agendamento)

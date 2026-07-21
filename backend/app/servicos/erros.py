@@ -1,7 +1,7 @@
 """
-Erros de dominio das Etapas 5 e 6 -- nao sao excecoes HTTP. A camada
-de servico (secao 5.8) nao sabe que HTTP existe; quem traduz isso em
-404/409/422 e a rota, nao o servico.
+Erros de dominio das Etapas 5, 6 e 7 -- nao sao excecoes HTTP. A
+camada de servico (secao 5.8) nao sabe que HTTP existe; quem traduz
+isso em 404/409/422 e a rota, nao o servico.
 """
 
 
@@ -25,3 +25,10 @@ class ReferenciaDeOutroTenantError(Exception):
 class TransicaoDeStatusInvalidaError(Exception):
     """A mudanca de status pedida nao e uma aresta valida da maquina
     de estados (secao 5.7)."""
+
+
+class EmailJaCadastradoError(Exception):
+    """POST /auth/registrar-negocio com um e-mail que ja tem usuario
+    (Etapa 7, secao 7.2). email e unico no sistema inteiro (Etapa 3,
+    seção 3.3), entao isso e um 409, nao um 422 -- o dado esta bem
+    formado, so ja existe."""
